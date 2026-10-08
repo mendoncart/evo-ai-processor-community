@@ -1,0 +1,65 @@
+name: Build & Publish Docker Image (fork → GHCR)
+
+# Fork-only publisher. The upstream docker-publish.yml pushes to Docker Hub
+# (evoapicloud/*) with org secrets a fork doesn't have; this one pushes to the
+# fork's own GHCR namespace using the built-in GITHUB_TOKEN — no secrets.
+#
+# Tags:
+#   git tag v1.1.0-rtm.1 → :1.1.0-rtm.1 + :latest   (use these in the compose)
+#   push to main         → :main + :sha-<sha7>      (rolling, for testing)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository_owner != 'evolution-foundation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: tags
+        env:
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          IMAGE="ghcr.io/${REPO,,}"
+          SHA_SHORT="${GH_SHA:0:7}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAGS="${IMAGE}:${GH_REF_NAME#v},${IMAGE}:latest"
+          else
+            TAGS="${IMAGE}:main,${IMAGE}:sha-${SHA_SHORT}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (amd64)
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=fork-amd64
+          cache-to: type=gha,scope=fork-amd64,mode=max
